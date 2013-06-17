@@ -30,6 +30,7 @@
 
 #include "ax.h"
 #include "tdesc.h"
+#include "lttng-tp.h"
 
 #define DEFAULT_TRACE_BUFFER_SIZE 5242880 /* 5*1024*1024 */
 
@@ -5743,6 +5744,7 @@ gdb_collect (struct tracepoint *tpoint, unsigned char *regs)
   if (!tracing)
     return;
 
+  tptest();
   ctx.base.type = fast_tracepoint;
   ctx.regs = regs;
   ctx.regcache_initted = 0;
