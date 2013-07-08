@@ -78,20 +78,9 @@ extern void initialize_all_files (void);
 #define DEFAULT_PROMPT	"(gdb) "
 #endif
 
-/* Initialization file name for gdb.  This is overridden in some configs.  */
+/* Initialization file name for gdb.  This is host-dependent.  */
 
-#ifndef PATH_MAX
-# ifdef FILENAME_MAX
-#  define PATH_MAX FILENAME_MAX
-# else
-#  define PATH_MAX 512
-# endif
-#endif
-
-#ifndef	GDBINIT_FILENAME
-#define	GDBINIT_FILENAME	".gdbinit"
-#endif
-char gdbinit[PATH_MAX + 1] = GDBINIT_FILENAME;
+const char gdbinit[] = GDBINIT;
 
 int inhibit_gdbinit = 0;
 
@@ -1252,6 +1241,12 @@ This GDB was configured as follows:\n\
              --without-babeltrace\n\
 "));
 #endif
+    /* We assume "relocatable" will be printed at least once, thus we always
+       print this text.  It's a reasonably safe assumption for now.  */
+    fprintf_filtered (stream, _("\n\
+(\"Relocatable\" means the directory can be moved with the GDB installation\n\
+tree, and GDB will still find it.)\n\
+"));
 }
 
 

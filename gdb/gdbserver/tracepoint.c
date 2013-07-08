@@ -3657,14 +3657,15 @@ cmd_qtstatus (char *packet)
 	   "circular:%d;"
 	   "disconn:%d;"
 	   "starttime:%s;stoptime:%s;"
-	   "username:%s:;notes:%s:",
+	   "username:%s;notes:%s:",
 	   tracing ? 1 : 0,
 	   stop_reason_rsp, tracing_stop_tpnum,
 	   traceframe_count, traceframes_created,
 	   free_space (), phex_nz (trace_buffer_hi - trace_buffer_lo, 0),
 	   circular_trace_buffer,
 	   disconnected_tracing,
-	   plongest (tracing_start_time), plongest (tracing_stop_time),
+	   phex_nz (tracing_start_time, sizeof (tracing_start_time)),
+	   phex_nz (tracing_stop_time, sizeof (tracing_stop_time)),
 	   buf1, buf2);
 }
 
@@ -5402,6 +5403,13 @@ build_traceframe_info_xml (char blocktype, unsigned char *dataptr, void *data)
 	break;
       }
     case 'V':
+      {
+	int vnum;
+
+	memcpy (&vnum, dataptr, sizeof (vnum));
+	buffer_xml_printf (buffer, "<tvar id=\"%d\"/>\n", vnum);
+	break;
+      }
     case 'R':
     case 'S':
       {

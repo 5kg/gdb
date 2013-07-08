@@ -813,7 +813,7 @@ struct dwp_file
   /* Name of the file.  */
   const char *name;
 
-  /* The bfd, when the file is open.  Otherwise this is NULL.  */
+  /* The bfd.  */
   bfd *dbfd;
 
   /* Section info for this file.  */
@@ -2099,29 +2099,33 @@ locate_dwz_sections (bfd *abfd, asection *sectp, void *arg)
     }
 }
 
-/* Open the separate '.dwz' debug file, if needed.  Error if the file
-   cannot be found.  */
+/* Open the separate '.dwz' debug file, if needed.  Return NULL if
+   there is no .gnu_debugaltlink section in the file.  Error if there
+   is such a section but the file cannot be found.  */
 
 static struct dwz_file *
 dwarf2_get_dwz_file (void)
 {
-  bfd *abfd, *dwz_bfd;
-  asection *section;
-  gdb_byte *data;
+  bfd *dwz_bfd;
+  char *data;
   struct cleanup *cleanup;
   const char *filename;
   struct dwz_file *result;
+  unsigned long buildid;
 
   if (dwarf2_per_objfile->dwz_file != NULL)
     return dwarf2_per_objfile->dwz_file;
 
-  abfd = dwarf2_per_objfile->objfile->obfd;
-  section = bfd_get_section_by_name (abfd, ".gnu_debugaltlink");
-  if (section == NULL)
-    error (_("could not find '.gnu_debugaltlink' section"));
-  if (!bfd_malloc_and_get_section (abfd, section, &data))
-    error (_("could not read '.gnu_debugaltlink' section: %s"),
-	   bfd_errmsg (bfd_get_error ()));
+  bfd_set_error (bfd_error_no_error);
+  data = bfd_get_alt_debug_link_info (dwarf2_per_objfile->objfile->obfd,
+				      &buildid);
+  if (data == NULL)
+    {
+      if (bfd_get_error () == bfd_error_no_error)
+	return NULL;
+      error (_("could not read '.gnu_debugaltlink' section: %s"),
+	     bfd_errmsg (bfd_get_error ()));
+    }
   cleanup = make_cleanup (xfree, data);
 
   filename = (const char *) data;
@@ -2799,6 +2803,7 @@ dwarf2_read_index (struct objfile *objfile)
   struct mapped_index local_map, *map;
   const gdb_byte *cu_list, *types_list, *dwz_list = NULL;
   offset_type cu_list_elements, types_list_elements, dwz_list_elements = 0;
+  struct dwz_file *dwz;
 
   if (!read_index_from_section (objfile, objfile->name,
 				use_deprecated_index_sections,
@@ -2813,9 +2818,9 @@ dwarf2_read_index (struct objfile *objfile)
 
   /* If there is a .dwz file, read it so we can get its CU list as
      well.  */
-  if (bfd_get_section_by_name (objfile->obfd, ".gnu_debugaltlink") != NULL)
+  dwz = dwarf2_get_dwz_file ();
+  if (dwz != NULL)
     {
-      struct dwz_file *dwz = dwarf2_get_dwz_file ();
       struct mapped_index dwz_map;
       const gdb_byte *dwz_types_ignore;
       offset_type dwz_types_elements_ignore;
@@ -3199,7 +3204,7 @@ dw2_symtab_iter_next (struct dw2_symtab_iterator *iter)
       offset_type cu_index_and_attrs =
 	MAYBE_SWAP (iter->vec[iter->next + 1]);
       offset_type cu_index = GDB_INDEX_CU_VALUE (cu_index_and_attrs);
-      struct dwarf2_per_cu_data *per_cu = dw2_get_cu (cu_index);
+      struct dwarf2_per_cu_data *per_cu;
       int want_static = iter->block_index != GLOBAL_BLOCK;
       /* This value is only valid for index versions >= 7.  */
       int is_static = GDB_INDEX_SYMBOL_STATIC_VALUE (cu_index_and_attrs);
@@ -3212,6 +3217,18 @@ dw2_symtab_iter_next (struct dw2_symtab_iterator *iter)
       int attrs_valid =
 	(iter->index->version >= 7
 	 && symbol_kind != GDB_INDEX_SYMBOL_KIND_NONE);
+
+      /* Don't crash on bad data.  */
+      if (cu_index >= (dwarf2_per_objfile->n_comp_units
+		       + dwarf2_per_objfile->n_type_units))
+	{
+	  complaint (&symfile_complaints,
+		     _(".gdb_index entry has bad CU index"
+		       " [in module %s]"), dwarf2_per_objfile->objfile->name);
+	  continue;
+	}
+
+      per_cu = dw2_get_cu (cu_index);
 
       /* Skip if already read in.  */
       if (per_cu->v.quick->symtab)
@@ -3630,15 +3647,16 @@ dw2_expand_symtabs_matching
 	  gdb_index_symbol_kind symbol_kind =
 	    GDB_INDEX_SYMBOL_KIND_VALUE (cu_index_and_attrs);
 	  int cu_index = GDB_INDEX_CU_VALUE (cu_index_and_attrs);
+	  /* Only check the symbol attributes if they're present.
+	     Indices prior to version 7 don't record them,
+	     and indices >= 7 may elide them for certain symbols
+	     (gold does this).  */
+	  int attrs_valid =
+	    (index->version >= 7
+	     && symbol_kind != GDB_INDEX_SYMBOL_KIND_NONE);
 
-	  /* Don't crash on bad data.  */
-	  if (cu_index >= (dwarf2_per_objfile->n_comp_units
-			   + dwarf2_per_objfile->n_type_units))
-	    continue;
-
-	  /* Only check the symbol's kind if it has one.
-	     Indices prior to version 7 don't record it.  */
-	  if (index->version >= 7)
+	  /* Only check the symbol's kind if it has one.  */
+	  if (attrs_valid)
 	    {
 	      switch (kind)
 		{
@@ -3657,6 +3675,16 @@ dw2_expand_symtabs_matching
 		default:
 		  break;
 		}
+	    }
+
+	  /* Don't crash on bad data.  */
+	  if (cu_index >= (dwarf2_per_objfile->n_comp_units
+			   + dwarf2_per_objfile->n_type_units))
+	    {
+	      complaint (&symfile_complaints,
+			 _(".gdb_index entry has bad CU index"
+			   " [in module %s]"), objfile->name);
+	      continue;
 	    }
 
 	  per_cu = dw2_get_cu (cu_index);
@@ -6098,6 +6126,7 @@ create_all_comp_units (struct objfile *objfile)
   int n_allocated;
   int n_comp_units;
   struct dwarf2_per_cu_data **all_comp_units;
+  struct dwz_file *dwz;
 
   n_comp_units = 0;
   n_allocated = 10;
@@ -6107,14 +6136,11 @@ create_all_comp_units (struct objfile *objfile)
   read_comp_units_from_section (objfile, &dwarf2_per_objfile->info, 0,
 				&n_allocated, &n_comp_units, &all_comp_units);
 
-  if (bfd_get_section_by_name (objfile->obfd, ".gnu_debugaltlink") != NULL)
-    {
-      struct dwz_file *dwz = dwarf2_get_dwz_file ();
-
-      read_comp_units_from_section (objfile, &dwz->info, 1,
-				    &n_allocated, &n_comp_units,
-				    &all_comp_units);
-    }
+  dwz = dwarf2_get_dwz_file ();
+  if (dwz != NULL)
+    read_comp_units_from_section (objfile, &dwz->info, 1,
+				  &n_allocated, &n_comp_units,
+				  &all_comp_units);
 
   dwarf2_per_objfile->all_comp_units
     = obstack_alloc (&objfile->objfile_obstack,
@@ -9281,11 +9307,13 @@ lookup_dwo_in_dwp (struct dwp_file *dwp_file,
    preliminary analysis.  Return a newly initialized bfd *, which
    includes a canonicalized copy of FILE_NAME.
    If IS_DWP is TRUE, we're opening a DWP file, otherwise a DWO file.
-   In case of trouble, return NULL.
+   SEARCH_CWD is true if the current directory is to be searched.
+   It will be searched before debug-file-directory.
+   If unable to find/open the file, return NULL.
    NOTE: This function is derived from symfile_bfd_open.  */
 
 static bfd *
-try_open_dwop_file (const char *file_name, int is_dwp)
+try_open_dwop_file (const char *file_name, int is_dwp, int search_cwd)
 {
   bfd *sym_bfd;
   int desc, flags;
@@ -9296,11 +9324,16 @@ try_open_dwop_file (const char *file_name, int is_dwp)
   char *search_path;
   static const char dirname_separator_string[] = { DIRNAME_SEPARATOR, '\0' };
 
-  if (*debug_file_directory != '\0')
-    search_path = concat (".", dirname_separator_string, debug_file_directory,
-			  NULL);
+  if (search_cwd)
+    {
+      if (*debug_file_directory != '\0')
+	search_path = concat (".", dirname_separator_string,
+			      debug_file_directory, NULL);
+      else
+	search_path = xstrdup (".");
+    }
   else
-    search_path = xstrdup (".");
+    search_path = xstrdup (debug_file_directory);
 
   flags = 0;
   if (is_dwp)
@@ -9339,7 +9372,7 @@ open_dwo_file (const char *file_name, const char *comp_dir)
   bfd *abfd;
 
   if (IS_ABSOLUTE_PATH (file_name))
-    return try_open_dwop_file (file_name, 0 /*is_dwp*/);
+    return try_open_dwop_file (file_name, 0 /*is_dwp*/, 0 /*search_cwd*/);
 
   /* Before trying the search path, try DWO_NAME in COMP_DIR.  */
 
@@ -9349,7 +9382,7 @@ open_dwo_file (const char *file_name, const char *comp_dir)
 
       /* NOTE: If comp_dir is a relative path, this will also try the
 	 search path, which seems useful.  */
-      abfd = try_open_dwop_file (path_to_try, 0 /*is_dwp*/);
+      abfd = try_open_dwop_file (path_to_try, 0 /*is_dwp*/, 1 /*search_cwd*/);
       xfree (path_to_try);
       if (abfd != NULL)
 	return abfd;
@@ -9361,7 +9394,7 @@ open_dwo_file (const char *file_name, const char *comp_dir)
   if (*debug_file_directory == '\0')
     return NULL;
 
-  return try_open_dwop_file (file_name, 0 /*is_dwp*/);
+  return try_open_dwop_file (file_name, 0 /*is_dwp*/, 1 /*search_cwd*/);
 }
 
 /* This function is mapped across the sections and remembers the offset and
@@ -9545,7 +9578,30 @@ allocate_dwp_loaded_cutus_table (struct objfile *objfile)
 static bfd *
 open_dwp_file (const char *file_name)
 {
-  return try_open_dwop_file (file_name, 1 /*is_dwp*/);
+  bfd *abfd;
+
+  abfd = try_open_dwop_file (file_name, 1 /*is_dwp*/, 1 /*search_cwd*/);
+  if (abfd != NULL)
+    return abfd;
+
+  /* Work around upstream bug 15652.
+     http://sourceware.org/bugzilla/show_bug.cgi?id=15652
+     [Whether that's a "bug" is debatable, but it is getting in our way.]
+     We have no real idea where the dwp file is, because gdb's realpath-ing
+     of the executable's path may have discarded the needed info.
+     [IWBN if the dwp file name was recorded in the executable, akin to
+     .gnu_debuglink, but that doesn't exist yet.]
+     Strip the directory from FILE_NAME and search again.  */
+  if (*debug_file_directory != '\0')
+    {
+      /* Don't implicitly search the current directory here.
+	 If the user wants to search "." to handle this case,
+	 it must be added to debug-file-directory.  */
+      return try_open_dwop_file (lbasename (file_name), 1 /*is_dwp*/,
+				 0 /*search_cwd*/);
+    }
+
+  return NULL;
 }
 
 /* Initialize the use of the DWP file for the current objfile.
@@ -9573,8 +9629,7 @@ open_and_init_dwp_file (void)
       return NULL;
     }
   dwp_file = OBSTACK_ZALLOC (&objfile->objfile_obstack, struct dwp_file);
-  dwp_file->name = obstack_copy0 (&objfile->objfile_obstack,
-				  dwp_name, strlen (dwp_name));
+  dwp_file->name = bfd_get_filename (dbfd);
   dwp_file->dbfd = dbfd;
   do_cleanups (cleanups);
 
@@ -20491,14 +20546,13 @@ dwarf2_per_objfile_free (struct objfile *objfile, void *d)
   struct dwarf2_per_objfile *data = d;
   int ix;
 
-  for (ix = 0; ix < dwarf2_per_objfile->n_comp_units; ++ix)
-    VEC_free (dwarf2_per_cu_ptr,
-	      dwarf2_per_objfile->all_comp_units[ix]->imported_symtabs);
+  for (ix = 0; ix < data->n_comp_units; ++ix)
+   VEC_free (dwarf2_per_cu_ptr, data->all_comp_units[ix]->imported_symtabs);
 
-  for (ix = 0; ix < dwarf2_per_objfile->n_type_units; ++ix)
+  for (ix = 0; ix < data->n_type_units; ++ix)
     VEC_free (dwarf2_per_cu_ptr,
-	      dwarf2_per_objfile->all_type_units[ix]->per_cu.imported_symtabs);
-  xfree (dwarf2_per_objfile->all_type_units);
+	      data->all_type_units[ix]->per_cu.imported_symtabs);
+  xfree (data->all_type_units);
 
   VEC_free (dwarf2_section_info_def, data->types);
 
@@ -21269,6 +21323,12 @@ write_psymtabs_to_index (struct objfile *objfile, const char *dir)
       gdb_byte val[8];
       struct psymtab_cu_index_map *map;
       void **slot;
+
+      /* CU of a shared file from 'dwz -m' may be unused by this main file.
+	 It may be referenced from a local scope but in such case it does not
+	 need to be present in .gdb_index.  */
+      if (psymtab == NULL)
+	continue;
 
       if (psymtab->user == NULL)
 	recursively_write_psymbols (objfile, psymtab, symtab, psyms_seen, i);

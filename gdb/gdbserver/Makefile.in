@@ -18,8 +18,8 @@
 prefix = @prefix@
 exec_prefix = @exec_prefix@
 
-host_alias = @host_alias@
-target_alias = @target_alias@
+host_alias = @host_noncanonical@
+target_alias = @target_noncanonical@
 program_transform_name = @program_transform_name@
 bindir = @bindir@
 libdir = @libdir@
@@ -378,7 +378,7 @@ $(GNULIB_BUILDDIR)/Makefile: $(srcdir)/../gnulib/Makefile.in config.status
 	  CONFIG_LINKS= \
 	  $(SHELL) config.status
 
-config.status: configure configure.srv
+config.status: configure configure.srv $(srcdir)/../development.sh
 	$(SHELL) ./config.status --recheck
 
 # automatic rebuilding in automake-generated Makefiles requires
@@ -390,13 +390,9 @@ am--refresh:
 
 force:
 
-version.c: Makefile $(srcdir)/../version.in
-	rm -f version.c-tmp version.c
-	echo '#include "server.h"' >> version.c-tmp
-	echo 'const char version[] = "'"`sed q ${srcdir}/../version.in`"'";' >> version.c-tmp
-	echo 'const char host_name[] = "$(host_alias)";' >> version.c-tmp
-	mv version.c-tmp version.c
-version.o: version.c $(server_h)
+version.c: Makefile $(srcdir)/../version.in $(srcdir)/../../bfd/version.h $(srcdir)/../common/create-version.sh
+	$(SHELL) $(srcdir)/../common/create-version.sh $(srcdir)/.. \
+	    $(host_alias) $(target_alias) version.c
 
 xml-builtin.c: stamp-xml; @true
 stamp-xml: $(XML_DIR)/feature_to_c.sh Makefile $(XML_FILES)
